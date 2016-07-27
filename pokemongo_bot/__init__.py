@@ -14,7 +14,7 @@ from pgoapi import PGoApi
 from pgoapi.utilities import f2i
 
 import logger
-from cell_workers import CatchVisiblePokemonWorker, PokemonCatchWorker, SeenFortWorker, MoveToFortWorker, InitialTransferWorker, EvolveAllWorker, RecycleItemsWorker
+from cell_workers import CatchVisiblePokemonWorker, PokemonCatchWorker, SeenFortWorker, MoveToFortWorker, InitialTransferWorker, EvolveAllWorker, RecycleItemsWorker, EggIncubationWorker
 from cell_workers.utils import distance, get_cellid, encode, i2f
 from human_behaviour import sleep
 from item_list import Item
@@ -198,6 +198,7 @@ class PokemonGoBot(object):
                     forts = forts[:23]
                     #endpoint_id = randint(0, len(forts)-1)
                     endpoint_id = len(forts)-1
+                    print "Endpoint: %s" % (endpoint_id)
                     endpoint = forts[endpoint_id]
                     waypoints = "optimize:true"
                     counter = 0
@@ -233,6 +234,9 @@ class PokemonGoBot(object):
                         return
                     if SeenFortWorker(forts[0], self).work() == WorkerResult.RUNNING:
                         return
+
+        worker = EggIncubationWorker(self)
+        worker.work()
 
         self.navigator.take_step()
 

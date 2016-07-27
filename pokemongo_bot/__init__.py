@@ -21,6 +21,8 @@ from item_list import Item
 from metrics import Metrics
 from spiral_navigator import SpiralNavigator
 from worker_result import WorkerResult
+from urllib2 import urlopen
+from random import randint
 
 
 class PokemonGoBot(object):
@@ -32,6 +34,7 @@ class PokemonGoBot(object):
     def __init__(self, config):
         self.config = config
         self.fort_timeouts = dict()
+        self.optimized = []
         self.pokemon_list = json.load(open(os.path.join('data', 'pokemon.json')))
         self.item_list = json.load(open(os.path.join('data', 'items.json')))
         self.metrics = Metrics(self)
@@ -176,19 +179,52 @@ class PokemonGoBot(object):
         if ((self.config.mode == "all" or
                 self.config.mode == "farm") and work_on_forts):
             if 'forts' in cell:
-                # Only include those with a lat/long
-                forts = [fort
-                         for fort in cell['forts']
-                         if 'latitude' in fort and 'type' in fort]
-                gyms = [gym for gym in cell['forts'] if 'gym_points' in gym]
+                if len(self.optimized) == 0:
+                    # Only include those with a lat/long
+                    forts = [fort
+                             for fort in cell['forts']
+                             if 'latitude' in fort and 'type' in fort]
+                    gyms = [gym for gym in cell['forts'] if 'gym_points' in gym]
 
-                # Remove stops that are still on timeout
-                forts = filter(lambda x: x["id"] not in self.fort_timeouts, forts)
+                    # Remove stops that are still on timeout
+                    forts = filter(lambda x: x["id"] not in self.fort_timeouts, forts)
 
-                # Sort all by distance from current pos- eventually this should
-                # build graph & A* it
-                forts.sort(key=lambda x: distance(self.position[
-                           0], self.position[1], x['latitude'], x['longitude']))
+                    # Sort all by distance from current pos- eventually this should
+                    # build graph & A* it
+                    forts.sort(key=lambda x: distance(self.position[
+                               0], self.position[1], x['latitude'], x['longitude']))
+
+                    forts = forts[:23]
+                    #endpoint_id = randint(0, len(forts)-1)
+                    endpoint_id = len(forts)-1
+                    endpoint = forts[endpoint_id]
+                    waypoints = "optimize:true"
+                    counter = 0
+                    for fort in forts:
+                        if fort['id'] != endpoint['id']:
+                            print "%s: %s, %s    %s" % (counter, fort['latitude'], fort['longitude'], fort['id'])
+                            waypoints = waypoints + "|" + str(fort['latitude']) + "," + str(fort['longitude'])
+                            counter = counter + 1
+
+                    url = "https://maps.googleapis.com/maps/api/directions/json?key=AIzaSyC4T_c8XMdXL7Hasolbu0IfLLcanQvYD7U&mode=walking&origin=%s,%s&destination=%s,%s&waypoints=%s" % (self.position[0], self.position[1], endpoint['latitude'], endpoint['longitude'], waypoints) 
+                    print "Getting optimized waypoints"
+                    print url
+                    tsp = json.load(urlopen(url))
+                    waypoint_order = tsp['routes'][0]['waypoint_order']
+
+                    print "Waypoint order: "
+                    print waypoint_order
+                    self.optimized = []
+                    for order in waypoint_order:
+                        self.optimized.append(forts[order])
+
+                    print "Optimized Order: "
+                    for fort in self.optimized:
+                        print "%s, %s    %s" % (fort['latitude'], fort['longitude'], fort['id'])
+
+
+                self.optimized = filter(lambda x: x['id'] not in self.fort_timeouts, self.optimized)
+                forts = self.optimized
 
                 if len(forts) > 0:
                     # Move to and spin the nearest stop.
@@ -209,10 +245,12 @@ class PokemonGoBot(object):
 
         if self.config.debug:
             logging.getLogger("requests").setLevel(logging.DEBUG)
+            logging.getLogger("connectionpool").setLevel(logging.DEBUG)
             logging.getLogger("pgoapi").setLevel(logging.DEBUG)
             logging.getLogger("rpc_api").setLevel(logging.DEBUG)
         else:
             logging.getLogger("requests").setLevel(logging.ERROR)
+            logging.getLogger("connectionpool").setLevel(logging.ERROR)
             logging.getLogger("pgoapi").setLevel(logging.ERROR)
             logging.getLogger("rpc_api").setLevel(logging.ERROR)
 

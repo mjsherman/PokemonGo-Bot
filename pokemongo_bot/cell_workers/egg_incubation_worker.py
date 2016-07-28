@@ -15,9 +15,16 @@ class EggIncubationWorker(object):
         self.km_walked = 0
         self.remaining_km = []
         EggIncubationWorker.last_km_walked
+        self.ten_steps = 0
 
     def work(self):
         check_incubation = False
+
+        self.ten_steps = self.ten_steps - 1
+        if self.ten_steps <= 0:
+            self.ten_steps = 10
+            check_incubation = True
+
         self._check_inventory() # get km, incubators, and incubating pkmn
         self._calculate_remaining_km()
         if len(self.remaining_km) and min(self.remaining_km)<=0:
@@ -26,11 +33,13 @@ class EggIncubationWorker(object):
             sleep(10)
             self.bot.latest_inventory = None
             self._check_inventory() # incubators don't release til after check hatched eggs call
+
         if len(self.available_incubators) and len(self.ready_eggs):
             logger.log('[#] Applying incubators to eggs...')
             self._incubate_eggs()
             self._calculate_remaining_km() # get updated min km target
-        if len(self.used_incubators) and (self.km_walked!=EggIncubationWorker.last_km_walked or check_incubation):
+
+        elif len(self.used_incubators) and (self.km_walked!=EggIncubationWorker.last_km_walked or check_incubation):
             logger.log('[#] Next egg hatches in {:.2n} km.'.format(min([km if km>=0 else 0 for km in self.remaining_km])),'yellow')
             EggIncubationWorker.last_km_walked=self.km_walked
 
@@ -66,6 +75,7 @@ class EggIncubationWorker(object):
         response_dict = self.bot.get_inventory()
         incubator_list = []
         egg_list = []
+
         try:
             for item in response_dict['responses']['GET_INVENTORY']['inventory_delta']['inventory_items']:
                 if 'inventory_item_data' in item:
@@ -78,7 +88,7 @@ class EggIncubationWorker(object):
                                 incubator_list.append(inc['egg_incubator'])
                         else:
                             #old protos
-                            incubator_list.append(incubators['egg_incubator'])
+                            incubator_list.append(incubators['egg_incubator'][0])
                     if 'pokemon_data' in item:
                         pokemon = item['pokemon_data']
                         if 'is_egg' in pokemon and pokemon['is_egg']:
@@ -90,7 +100,7 @@ class EggIncubationWorker(object):
                     if 'pokemon_id' in inc:
                         self.incubating_eggs.append(inc['pokemon_id'])
                         self.used_incubators.append(inc)
-                    elif inc['uses_remaining']>0:
+                    else:
                         self.available_incubators.append(inc['id'])
             if len(egg_list)>0:
                 self.ready_eggs = [egg for egg in egg_list if egg not in self.incubating_eggs]
@@ -110,21 +120,21 @@ class EggIncubationWorker(object):
         result = 6
         logger.log('[#] {} incubators available, {} eggs ready.'.format(len(self.available_incubators),len(self.ready_eggs)))
         for incubator in self.available_incubators:
-            while len(self.ready_eggs)>0 and result==6:
+            if len(self.ready_eggs)>0:
                 egg = self.ready_eggs.pop()
-                if self.bot.config.debug:
-                    logger.log('[d] trying to apply incubator {} to pokemon {}'.format(incubator, egg),'yellow')
+                logger.log('[d] trying to apply incubator {} to pokemon {}'.format(incubator, egg),'yellow')
                 self.bot.api.use_item_egg_incubator(item_id=incubator,pokemon_id=egg)
                 response_dict = self.bot.api.call()
+                print "incubator response: "
+                print response_dict
+
                 if 'result' in response_dict['responses']['USE_ITEM_EGG_INCUBATOR']:
                     result = response_dict['responses']['USE_ITEM_EGG_INCUBATOR']['result']
+
                 if result == 1:
                     applied+=1
                     self.incubating_eggs.append(egg)
                 else:
                     self.ready_eggs.append(egg)
-                if self.bot.config.debug:
-                    logger.log('[d] {}'.format(api_responses[result]))
-                else:
-                    result=6
+
         logger.log('[#] {} incubators applied. {} eggs now incubating, in total.'.format(applied,len(self.incubating_eggs)),'green')

@@ -14,7 +14,7 @@ from pgoapi import PGoApi
 from pgoapi.utilities import f2i
 
 import logger
-from cell_workers import CatchVisiblePokemonWorker, PokemonCatchWorker, SeenFortWorker, MoveToFortWorker, InitialTransferWorker, EvolveAllWorker, RecycleItemsWorker, EggIncubationWorker
+from cell_workers import SpinNearestFortWorker, CatchVisiblePokemonWorker, PokemonCatchWorker, SeenFortWorker, MoveToFortWorker, PokemonTransferWorker, EvolveAllWorker, RecycleItemsWorker, IncubateEggsWorker
 from cell_workers.utils import distance, get_cellid, encode, i2f
 from human_behaviour import sleep
 from item_list import Item
@@ -39,6 +39,7 @@ class PokemonGoBot(object):
         self.item_list = json.load(open(os.path.join('data', 'items.json')))
         self.metrics = Metrics(self)
         self.latest_inventory = None
+        self.cell = None
 
     def start(self):
         self._setup_logging()
@@ -46,10 +47,28 @@ class PokemonGoBot(object):
         self.navigator = SpiralNavigator(self)
         random.seed()
 
-    def take_step(self):
-        self.process_cells(work_on_forts=True)
+    def tick(self):
+        self.cell = self.get_meta_cell()
 
-    def process_cells(self, work_on_forts=True):
+        # Check if session token has expired
+        self.check_session(self.position[0:2])
+
+        workers = [
+            IncubateEggsWorker,
+            PokemonTransferWorker,
+            EvolveAllWorker,
+            RecycleItemsWorker,
+            CatchVisiblePokemonWorker,
+            SpinNearestFortWorker
+        ]
+
+        for worker in workers:
+            if worker(self).work() == WorkerResult.RUNNING:
+                return
+
+        self.navigator.take_step()
+
+    def get_meta_cell(self):
         location = self.position[0:2]
         cells = self.find_close_cells(*location)
 
@@ -65,9 +84,11 @@ class PokemonGoBot(object):
             if "catchable_pokemons" in cell and len(cell["catchable_pokemons"]):
                 catchable_pokemons += cell["catchable_pokemons"]
 
-        # Have the worker treat the whole area as a single cell.
-        self.work_on_cell({"forts": forts, "wild_pokemons": wild_pokemons,
-                           "catchable_pokemons": catchable_pokemons}, location, work_on_forts)
+        return {
+            "forts": forts,
+            "wild_pokemons": wild_pokemons,
+            "catchable_pokemons": catchable_pokemons
+        }
 
     def update_web_location(self, cells=[], lat=None, lng=None, alt=None):
         # we can call the function with no arguments and still get the position and map_cells
@@ -103,7 +124,7 @@ class PokemonGoBot(object):
                                                      gym_latitude=fort.get('latitude'),
                                                      gym_longitude=fort.get('longitude'))
                             response_gym_details = self.api.call()
-                            fort['gym_details'] = response_gym_details['responses']['GET_GYM_DETAILS']
+                            fort['gym_details'] = response_gym_details.get('responses', {}).get('GET_GYM_DETAILS', None)
 
         user_data_cells = "data/cells-%s.json" % (self.config.username)
         with open(user_data_cells, 'w') as outfile:
@@ -159,87 +180,6 @@ class PokemonGoBot(object):
             )
         return map_cells
 
-    def work_on_cell(self, cell, position, work_on_forts=1):
-        # Check if session token has expired
-        self.check_session(position)
-
-        worker = InitialTransferWorker(self)
-        if worker.work() == WorkerResult.RUNNING:
-            return
-
-        worker = EvolveAllWorker(self)
-        if worker.work() == WorkerResult.RUNNING:
-            return
-
-        RecycleItemsWorker(self).work()
-
-        worker = CatchVisiblePokemonWorker(self, cell)
-        if worker.work() == WorkerResult.RUNNING:
-            return
-
-        if ((self.config.mode == "all" or
-                self.config.mode == "farm") and work_on_forts):
-            if 'forts' in cell:
-                if len(self.optimized) == 0:
-                    # Only include those with a lat/long
-                    forts = [fort
-                             for fort in cell['forts']
-                             if 'latitude' in fort and 'type' in fort]
-                    gyms = [gym for gym in cell['forts'] if 'gym_points' in gym]
-
-                    # Remove stops that are still on timeout
-                    forts = filter(lambda x: x["id"] not in self.fort_timeouts, forts)
-
-                    # Sort all by distance from current pos- eventually this should
-                    # build graph & A* it
-                    forts.sort(key=lambda x: distance(self.position[
-                               0], self.position[1], x['latitude'], x['longitude']))
-
-                    forts = forts[:23]
-                    #endpoint_id = randint(0, len(forts)-1)
-                    endpoint_id = len(forts)-1
-                    print "Endpoint: %s" % (endpoint_id)
-                    endpoint = forts[endpoint_id]
-                    waypoints = "optimize:true"
-                    counter = 0
-                    for fort in forts:
-                        if fort['id'] != endpoint['id']:
-                            print "%s: %s, %s    %s" % (counter, fort['latitude'], fort['longitude'], fort['id'])
-                            waypoints = waypoints + "|" + str(fort['latitude']) + "," + str(fort['longitude'])
-                            counter = counter + 1
-
-                    url = "https://maps.googleapis.com/maps/api/directions/json?key=AIzaSyC4T_c8XMdXL7Hasolbu0IfLLcanQvYD7U&mode=walking&origin=%s,%s&destination=%s,%s&waypoints=%s" % (self.position[0], self.position[1], endpoint['latitude'], endpoint['longitude'], waypoints) 
-                    print "Getting optimized waypoints"
-                    print url
-                    tsp = json.load(urlopen(url))
-                    waypoint_order = tsp['routes'][0]['waypoint_order']
-
-                    print "Waypoint order: "
-                    print waypoint_order
-                    self.optimized = []
-                    for order in waypoint_order:
-                        self.optimized.append(forts[order])
-
-                    print "Optimized Order: "
-                    for fort in self.optimized:
-                        print "%s, %s    %s" % (fort['latitude'], fort['longitude'], fort['id'])
-
-
-                self.optimized = filter(lambda x: x['id'] not in self.fort_timeouts, self.optimized)
-                forts = self.optimized
-
-                if len(forts) > 0:
-                    # Move to and spin the nearest stop.
-                    if MoveToFortWorker(forts[0], self).work() == WorkerResult.RUNNING:
-                        return
-                    if SeenFortWorker(forts[0], self).work() == WorkerResult.RUNNING:
-                        return
-
-        worker = EggIncubationWorker(self)
-        worker.work()
-
-        self.navigator.take_step()
-
     def _setup_logging(self):
         self.log = logging.getLogger(__name__)
         # log settings
@@ -267,7 +207,6 @@ class PokemonGoBot(object):
             if remaining_time < 60:
                 logger.log("Session stale, re-logging in", 'yellow')
                 self.login()
-
 
     def login(self):
         logger.log('Attempting login to Pokemon Go.', 'white')
@@ -315,7 +254,8 @@ class PokemonGoBot(object):
         currency_2 = "0"
 
         if response_dict:
-            player = response_dict['responses']['GET_PLAYER']['player_data']
+            self._player = response_dict['responses']['GET_PLAYER']['player_data']
+            player = self._player
         else:
             logger.log("The API didn't return player info, servers are unstable - retrying.", 'red')
             sleep(5)
@@ -417,7 +357,7 @@ class PokemonGoBot(object):
 
                 if item_id in items_stock:
                     items_stock[item_id] = item_count
-            except:
+            except Exception:
                 continue
         return items_stock
 
@@ -471,12 +411,11 @@ class PokemonGoBot(object):
                 logger.log('GeoPosition: {}'.format(self.position))
                 logger.log('')
                 has_position = True
-                return
-            except:
+            except Exception:
                 logger.log('[x] The location given in the config could not be parsed. Checking for a cached location.')
                 pass
 
-        if self.config.location_cache and not has_position:
+        if self.config.location_cache:
             try:
                 #
                 # save location flag used to pull the last known location from
@@ -487,7 +426,7 @@ class PokemonGoBot(object):
                     location_json = json.load(f)
                     location = (location_json['lat'],
                                      location_json['lng'], 0.0)
-                    print(location)
+                    #print(location)
                     self.api.set_position(*location)
 
                     logger.log('')
@@ -500,9 +439,11 @@ class PokemonGoBot(object):
 
                     has_position = True
                     return
-            except:
-                sys.exit(
-                    "No cached Location. Please specify initial location.")
+            except Exception:
+                if(has_position == False):
+                    sys.exit(
+                        "No cached Location. Please specify initial location.")
+                logger.log('[x] Parsing cached location failed, try to use the initial location...')
 
     def _get_pos_by_name(self, location_name):
         # Check if the given location is already a coordinate.

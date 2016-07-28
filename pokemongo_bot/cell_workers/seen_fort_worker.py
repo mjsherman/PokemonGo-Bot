@@ -42,7 +42,7 @@ class SeenFortWorker(object):
             fort_name = 'Unknown'
         logger.log('Now at Pokestop: ' + fort_name,
                    'cyan')
-        if self.config.mode != 'farm' and 'lure_info' in self.fort:
+        if self.config.catch_pokemon and 'lure_info' in self.fort:
             # Check if the lure has a pokemon active
             if 'encounter_id' in self.fort['lure_info']:
                 logger.log("Found a lure on this pokestop! Catching pokemon...", 'cyan')
@@ -128,8 +128,7 @@ class SeenFortWorker(object):
                         format_time((pokestop_cooldown / 1000) -
                                     seconds_since_epoch)))
             elif spin_result == 4:
-                logger.log("Inventory is full, switching to catch mode...", 'red')
-                self.config.mode = 'poke'
+                logger.log("Inventory is full", 'red')
             else:
                 logger.log("Unknown spin result: " + str(spin_result), 'red')
 
